@@ -4,6 +4,8 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import requests
 from datetime import datetime
 import pytz
+import os
+import json
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -15,7 +17,15 @@ client = Groq(api_key=GROQ_KEY)
 conversation_history = []
 
 def get_google_creds():
-    creds = Credentials.from_authorized_user_file('token.json')
+    token_data = json.loads(os.environ.get('GOOGLE_TOKEN', '{}'))
+    creds = Credentials(
+        token=token_data.get('token'),
+        refresh_token=token_data.get('refresh_token'),
+        token_uri=token_data.get('token_uri'),
+        client_id=token_data.get('client_id'),
+        client_secret=token_data.get('client_secret'),
+        scopes=token_data.get('scopes')
+    )
     return creds
 
 def get_calendar_events():
@@ -109,7 +119,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 لو طلب ترجمة، ترجملهوله على طول.
 المعلومات الحالية:
 {status_bar}
-📆 المواعيد القادمة: {calendar}
+📆 المواعيد القادمة:
+{calendar}
 📧 الإيميل: {gmail}"""
 
     messages = [{"role": "system", "content": system_prompt}] + conversation_history
