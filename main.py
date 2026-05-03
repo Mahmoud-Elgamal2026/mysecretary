@@ -5,16 +5,44 @@ import requests
 from datetime import datetime
 import pytz
 import os
-import json
+import imaplib
+import email
+from email.header import decode_header
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+import json
 
 TELEGRAM_TOKEN = "8569606909:AAEdLS1E5aruUZW60EPDThrWyGIsCUQlBNs"
 GROQ_KEY = "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"
 WEATHER_KEY = "4878e67a8ae538cb3737137a422ccdc9"
+GMAIL_USER = os.environ.get('GMAIL_USER', 'prof.mahmoud2016@gmail.com')
+GMAIL_PASSWORD = os.environ.get('GMAIL_PASSWORD', '')
 
 client = Groq(api_key=GROQ_KEY)
 conversation_history = []
+
+def get_gmail_summary():
+    try:
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(GMAIL_USER, GMAIL_PASSWORD)
+        mail.select("inbox")
+        _, messages = mail.search(None, 'UNSEEN')
+        email_ids = messages[0].split()
+        if not email_ids:
+            return "مفيش إيميلات جديدة"
+        result = f"عندك {len(email_ids)} إيميل جديد:\n"
+        for eid in email_ids[-5:]:
+            _, msg_data = mail.fetch(eid, "(RFC822)")
+            msg = email.message_from_bytes(msg_data[0][1])
+            subject = decode_header(msg["Subject"])[0][0]
+            if isinstance(subject, bytes):
+                subject = subject.decode(errors='ignore')
+            sender = msg.get("From", "")
+            result += f"• من: {sender}\n  الموضوع: {subject}\n"
+        mail.logout()
+        return result
+    except Exception as e:
+        return f"مش قادر اوصل للإيميل: {e}"
 
 def get_google_creds():
     token_data = json.loads(os.environ.get('GOOGLE_TOKEN', '{}'))
@@ -50,22 +78,6 @@ def get_calendar_events():
         return result
     except Exception as e:
         return f"مش قادر اوصل للكالندر: {e}"
-
-def get_gmail_summary():
-    try:
-        creds = get_google_creds()
-        service = build('gmail', 'v1', credentials=creds)
-        results = service.users().messages().list(
-            userId='me',
-            labelIds=['INBOX', 'UNREAD'],
-            maxResults=5
-        ).execute()
-        messages = results.get('messages', [])
-        if not messages:
-            return "مفيش إيميلات جديدة"
-        return f"عندك {len(messages)} إيميل جديد"
-    except Exception as e:
-        return f"مش قادر اوصل للإيميل: {e}"
 
 def get_hijri_date():
     try:
