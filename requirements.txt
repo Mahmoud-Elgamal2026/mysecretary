@@ -2,3 +2,5 @@ python-telegram-bot
 groq
 requests
 pytz
+google-auth-oauthlib
+google-api-python-client
