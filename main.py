@@ -73,11 +73,6 @@ def add_task(task, priority="متوسطة", deadline="", notes=""):
             valueInputOption='RAW',
             body={'values': [[task_num, task, priority, "جديدة", now, "", "", "", deadline, notes]]}
         ).execute()
-        tasks_service = build('tasks', 'v1', credentials=creds)
-        task_body = {'title': task, 'notes': notes}
-        if deadline:
-            task_body['due'] = deadline + 'T00:00:00.000Z'
-        tasks_service.tasks().insert(tasklist='@default', body=task_body).execute()
         return f"✅ تمت إضافة المهمة: {task}"
     except Exception as e:
         return f"مش قادر أضيف: {e}"
