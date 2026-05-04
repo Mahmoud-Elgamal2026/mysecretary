@@ -1,6 +1,6 @@
 from groq import Groq
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes, JobQueue
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import requests
 from datetime import datetime
 import pytz
@@ -14,6 +14,7 @@ TELEGRAM_TOKEN = "8569606909:AAEdLS1E5aruUZW60EPDThrWyGIsCUQlBNs"
 GROQ_KEY = "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"
 WEATHER_KEY = "4878e67a8ae538cb3737137a422ccdc9"
 SHEET_ID = "18uJrVBBjOOg51sReKhXdxmZdWnBsuAhZlEBda6K8JG8"
+TASKS_SHEET = "Tasks"
 MAHMOUD_CHAT_ID = None
 
 client = Groq(api_key=GROQ_KEY)
@@ -39,7 +40,7 @@ def get_tasks():
         service = build('sheets', 'v4', credentials=creds)
         result = service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID,
-            range='A:C'
+            range=f'{TASKS_SHEET}!A:D'
         ).execute()
         rows = result.get('values', [])
         if len(rows) <= 1:
@@ -48,37 +49,38 @@ def get_tasks():
         for i, row in enumerate(rows[1:], 1):
             task = row[0] if len(row) > 0 else ""
             status = row[1] if len(row) > 1 else "جديدة"
-            date = row[2] if len(row) > 2 else ""
-            tasks += f"{i}. {task} | {status} | {date}\n"
+            priority = row[2] if len(row) > 2 else ""
+            deadline = row[3] if len(row) > 3 else ""
+            tasks += f"{i}. {task} | {status} | {priority} | {deadline}\n"
         return tasks
     except Exception as e:
         return f"مش قادر اوصل للمهام: {e}"
 
-def add_task(task, date=""):
+def add_task(task, status="جديدة", priority="", deadline=""):
     try:
         creds = get_google_creds()
         service = build('sheets', 'v4', credentials=creds)
         service.spreadsheets().values().append(
             spreadsheetId=SHEET_ID,
-            range='A:C',
+            range=f'{TASKS_SHEET}!A:D',
             valueInputOption='RAW',
-            body={'values': [[task, 'جديدة', date]]}
+            body={'values': [[task, status, priority, deadline]]}
         ).execute()
         return f"✅ تمت إضافة المهمة: {task}"
     except Exception as e:
         return f"مش قادر أضيف: {e}"
 
-def complete_task(task_num):
+def update_task(task_num, status):
     try:
         creds = get_google_creds()
         service = build('sheets', 'v4', credentials=creds)
         service.spreadsheets().values().update(
             spreadsheetId=SHEET_ID,
-            range=f'B{task_num+1}',
+            range=f'{TASKS_SHEET}!B{task_num+1}',
             valueInputOption='RAW',
-            body={'values': [['✅ منتهية']]}
+            body={'values': [[status]]}
         ).execute()
-        return f"✅ تم إنهاء المهمة رقم {task_num}"
+        return f"✅ تم تحديث المهمة رقم {task_num}"
     except Exception as e:
         return f"مش قادر أحدث: {e}"
 
@@ -86,13 +88,19 @@ def delete_task(task_num):
     try:
         creds = get_google_creds()
         service = build('sheets', 'v4', credentials=creds)
+        sheet_metadata = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+        sheet_id = None
+        for sheet in sheet_metadata['sheets']:
+            if sheet['properties']['title'] == TASKS_SHEET:
+                sheet_id = sheet['properties']['sheetId']
+                break
         service.spreadsheets().batchUpdate(
             spreadsheetId=SHEET_ID,
             body={
                 'requests': [{
                     'deleteDimension': {
                         'range': {
-                            'sheetId': 0,
+                            'sheetId': sheet_id,
                             'dimension': 'ROWS',
                             'startIndex': task_num,
                             'endIndex': task_num + 1
@@ -204,9 +212,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     system_prompt = f"""أنت سكرتير محمود الشخصي، ذكي وفرفوش وبترد بلهجة مصرية عامية شيك.
 ناديه دايماً بـ "محمود".
 لو طلب ترجمة، ترجملهوله على طول.
-لو قال "أضف مهمة [المهمة]" استخدم الأمر: ADD_TASK:[المهمة]
-لو قال "خلصت مهمة [رقم]" استخدم الأمر: COMPLETE_TASK:[رقم]
-لو قال "احذف مهمة [رقم]" استخدم الأمر: DELETE_TASK:[رقم]
+لو قال "أضف مهمة [المهمة]" رد بالضبط: ADD_TASK:[المهمة]
+لو قال "خلصت مهمة [رقم]" رد بالضبط: COMPLETE_TASK:[رقم]
+لو قال "احذف مهمة [رقم]" رد بالضبط: DELETE_TASK:[رقم]
 المعلومات الحالية:
 {status_bar}
 📆 المواعيد القادمة:
@@ -231,7 +239,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
         elif "COMPLETE_TASK:" in bot_response:
             num = int(bot_response.split("COMPLETE_TASK:")[-1].strip())
-            result = complete_task(num)
+            result = update_task(num, "✅ منتهية")
             await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
         elif "DELETE_TASK:" in bot_response:
             num = int(bot_response.split("DELETE_TASK:")[-1].strip())
@@ -250,7 +258,10 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     egypt_tz = pytz.timezone('Africa/Cairo')
-    app.job_queue.run_daily(daily_reminder, time=datetime.strptime("08:00", "%H:%M").time().replace(tzinfo=egypt_tz))
+    app.job_queue.run_daily(
+        daily_reminder,
+        time=datetime.strptime("08:00", "%H:%M").time().replace(tzinfo=egypt_tz)
+    )
 
     print("البوت شغال يا محمود!")
     app.run_polling()
