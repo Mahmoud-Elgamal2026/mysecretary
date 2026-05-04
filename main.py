@@ -60,8 +60,6 @@ def add_task(task, priority="متوسطة", deadline="", notes=""):
     try:
         creds = get_google_creds()
         now = datetime.now(pytz.timezone('Africa/Cairo')).strftime("%Y-%m-%d %H:%M")
-
-        # اضافة في الشيت
         sheets_service = build('sheets', 'v4', credentials=creds)
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID,
@@ -69,22 +67,18 @@ def add_task(task, priority="متوسطة", deadline="", notes=""):
         ).execute()
         rows = result.get('values', [])
         task_num = len(rows)
-
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SHEET_ID,
             range=f'{TASKS_SHEET}!A:J',
             valueInputOption='RAW',
             body={'values': [[task_num, task, priority, "جديدة", now, "", "", "", deadline, notes]]}
         ).execute()
-
-        # اضافة في Google Tasks
         tasks_service = build('tasks', 'v1', credentials=creds)
         task_body = {'title': task, 'notes': notes}
         if deadline:
             task_body['due'] = deadline + 'T00:00:00.000Z'
         tasks_service.tasks().insert(tasklist='@default', body=task_body).execute()
-
-        return f"✅ تمت إضافة المهمة: {task}\nفي الشيت وGoogle Tasks!"
+        return f"✅ تمت إضافة المهمة: {task}"
     except Exception as e:
         return f"مش قادر أضيف: {e}"
 
@@ -238,11 +232,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     system_prompt = f"""أنت سكرتير محمود الشخصي، ذكي وفرفوش وبترد بلهجة مصرية عامية شيك.
 ناديه دايماً بـ "محمود".
 لو طلب ترجمة، ترجملهوله على طول.
-لو قال "أضف مهمة [المهمة]" رد بالضبط: ADD_TASK:[المهمة]
-لو قال "خلصت مهمة [رقم]" رد بالضبط: COMPLETE_TASK:[رقم]
-لو قال "وقفت مهمة [رقم]" رد بالضبط: PAUSE_TASK:[رقم]
-لو قال "شغال على مهمة [رقم]" رد بالضبط: START_TASK:[رقم]
-لو قال "احذف مهمة [رقم]" رد بالضبط: DELETE_TASK:[رقم]
+لو طلب إضافة مهمة، ردك يكون بالضبط على السطر الأول فقط: ADD_TASK:[اسم المهمة فقط]
+لو قال خلصت مهمة [رقم]: COMPLETE_TASK:[رقم]
+لو قال وقفت مهمة [رقم]: PAUSE_TASK:[رقم]
+لو قال شغال على مهمة [رقم]: START_TASK:[رقم]
+لو قال احذف مهمة [رقم]: DELETE_TASK:[رقم]
 المعلومات الحالية:
 {status_bar}
 📆 المواعيد القادمة:
@@ -261,24 +255,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_response = response.choices[0].message.content
         conversation_history.append({"role": "assistant", "content": bot_response})
 
-        if "ADD_TASK:" in bot_response:
-            task = bot_response.split("ADD_TASK:")[-1].strip()
+        first_line = bot_response.strip().split("\n")[0].strip()
+
+        if first_line.startswith("ADD_TASK:"):
+            task = first_line.replace("ADD_TASK:", "").strip()
             result = add_task(task)
             await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
-        elif "COMPLETE_TASK:" in bot_response:
-            num = int(bot_response.split("COMPLETE_TASK:")[-1].strip())
+        elif first_line.startswith("COMPLETE_TASK:"):
+            num = int(first_line.replace("COMPLETE_TASK:", "").strip())
             result = update_task_status(num, "✅ منتهية")
             await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
-        elif "PAUSE_TASK:" in bot_response:
-            num = int(bot_response.split("PAUSE_TASK:")[-1].strip())
+        elif first_line.startswith("PAUSE_TASK:"):
+            num = int(first_line.replace("PAUSE_TASK:", "").strip())
             result = update_task_status(num, "⏸️ موقوفة")
             await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
-        elif "START_TASK:" in bot_response:
-            num = int(bot_response.split("START_TASK:")[-1].strip())
+        elif first_line.startswith("START_TASK:"):
+            num = int(first_line.replace("START_TASK:", "").strip())
             result = update_task_status(num, "🔄 شغال")
             await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
-        elif "DELETE_TASK:" in bot_response:
-            num = int(bot_response.split("DELETE_TASK:")[-1].strip())
+        elif first_line.startswith("DELETE_TASK:"):
+            num = int(first_line.replace("DELETE_TASK:", "").strip())
             result = delete_task(num)
             await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
         else:
@@ -292,13 +288,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
     egypt_tz = pytz.timezone('Africa/Cairo')
     app.job_queue.run_daily(
         daily_reminder,
         time=datetime.strptime("08:00", "%H:%M").time().replace(tzinfo=egypt_tz)
     )
-
     print("البوت شغال يا محمود!")
     app.run_polling()
 
