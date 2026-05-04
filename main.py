@@ -40,47 +40,73 @@ def get_tasks():
         service = build('sheets', 'v4', credentials=creds)
         result = service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID,
-            range=f'{TASKS_SHEET}!A:D'
+            range=f'{TASKS_SHEET}!A:J'
         ).execute()
         rows = result.get('values', [])
         if len(rows) <= 1:
             return "مفيش مهام دلوقتي"
         tasks = ""
         for i, row in enumerate(rows[1:], 1):
-            task = row[0] if len(row) > 0 else ""
-            status = row[1] if len(row) > 1 else "جديدة"
+            task = row[1] if len(row) > 1 else ""
             priority = row[2] if len(row) > 2 else ""
-            deadline = row[3] if len(row) > 3 else ""
-            tasks += f"{i}. {task} | {status} | {priority} | {deadline}\n"
+            status = row[3] if len(row) > 3 else ""
+            deadline = row[8] if len(row) > 8 else ""
+            tasks += f"{i}. {task} | {priority} | {status} | {deadline}\n"
         return tasks
     except Exception as e:
         return f"مش قادر اوصل للمهام: {e}"
 
-def add_task(task, status="جديدة", priority="", deadline=""):
+def add_task(task, priority="متوسطة", deadline="", notes=""):
     try:
         creds = get_google_creds()
-        service = build('sheets', 'v4', credentials=creds)
-        service.spreadsheets().values().append(
+        now = datetime.now(pytz.timezone('Africa/Cairo')).strftime("%Y-%m-%d %H:%M")
+
+        # اضافة في الشيت
+        sheets_service = build('sheets', 'v4', credentials=creds)
+        result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SHEET_ID,
-            range=f'{TASKS_SHEET}!A:D',
-            valueInputOption='RAW',
-            body={'values': [[task, status, priority, deadline]]}
+            range=f'{TASKS_SHEET}!A:A'
         ).execute()
-        return f"✅ تمت إضافة المهمة: {task}"
+        rows = result.get('values', [])
+        task_num = len(rows)
+
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SHEET_ID,
+            range=f'{TASKS_SHEET}!A:J',
+            valueInputOption='RAW',
+            body={'values': [[task_num, task, priority, "جديدة", now, "", "", "", deadline, notes]]}
+        ).execute()
+
+        # اضافة في Google Tasks
+        tasks_service = build('tasks', 'v1', credentials=creds)
+        task_body = {'title': task, 'notes': notes}
+        if deadline:
+            task_body['due'] = deadline + 'T00:00:00.000Z'
+        tasks_service.tasks().insert(tasklist='@default', body=task_body).execute()
+
+        return f"✅ تمت إضافة المهمة: {task}\nفي الشيت وGoogle Tasks!"
     except Exception as e:
         return f"مش قادر أضيف: {e}"
 
-def update_task(task_num, status):
+def update_task_status(task_num, status):
     try:
         creds = get_google_creds()
         service = build('sheets', 'v4', credentials=creds)
+        now = datetime.now(pytz.timezone('Africa/Cairo')).strftime("%Y-%m-%d %H:%M")
         service.spreadsheets().values().update(
             spreadsheetId=SHEET_ID,
-            range=f'{TASKS_SHEET}!B{task_num+1}',
+            range=f'{TASKS_SHEET}!D{task_num+1}',
             valueInputOption='RAW',
             body={'values': [[status]]}
         ).execute()
-        return f"✅ تم تحديث المهمة رقم {task_num}"
+        if status == "✅ منتهية":
+            service.spreadsheets().values().update(
+                spreadsheetId=SHEET_ID,
+                range=f'{TASKS_SHEET}!G{task_num+1}',
+                valueInputOption='RAW',
+                body={'values': [[now]]}
+            ).execute()
+        return f"✅ تم تحديث المهمة رقم {task_num} إلى: {status}"
     except Exception as e:
         return f"مش قادر أحدث: {e}"
 
@@ -214,6 +240,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 لو طلب ترجمة، ترجملهوله على طول.
 لو قال "أضف مهمة [المهمة]" رد بالضبط: ADD_TASK:[المهمة]
 لو قال "خلصت مهمة [رقم]" رد بالضبط: COMPLETE_TASK:[رقم]
+لو قال "وقفت مهمة [رقم]" رد بالضبط: PAUSE_TASK:[رقم]
+لو قال "شغال على مهمة [رقم]" رد بالضبط: START_TASK:[رقم]
 لو قال "احذف مهمة [رقم]" رد بالضبط: DELETE_TASK:[رقم]
 المعلومات الحالية:
 {status_bar}
@@ -239,7 +267,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
         elif "COMPLETE_TASK:" in bot_response:
             num = int(bot_response.split("COMPLETE_TASK:")[-1].strip())
-            result = update_task(num, "✅ منتهية")
+            result = update_task_status(num, "✅ منتهية")
+            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
+        elif "PAUSE_TASK:" in bot_response:
+            num = int(bot_response.split("PAUSE_TASK:")[-1].strip())
+            result = update_task_status(num, "⏸️ موقوفة")
+            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
+        elif "START_TASK:" in bot_response:
+            num = int(bot_response.split("START_TASK:")[-1].strip())
+            result = update_task_status(num, "🔄 شغال")
             await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
         elif "DELETE_TASK:" in bot_response:
             num = int(bot_response.split("DELETE_TASK:")[-1].strip())
