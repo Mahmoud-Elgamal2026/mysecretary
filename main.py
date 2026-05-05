@@ -1,5 +1,5 @@
 from groq import Groq
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler
 import requests
 from datetime import datetime, timedelta
@@ -209,6 +209,56 @@ def get_status_bar():
     hijri = get_hijri_date()
     return f"📅 {day_name} {date_str} | {hijri}\n🕐 {time_str} | 🌡️ {weather}"
 
+async def check_task_reminders(context):
+    if not MAHMOUD_CHAT_ID:
+        return
+    try:
+        creds = get_google_creds()
+        service = build('sheets', 'v4', credentials=creds)
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=f'{TASKS_SHEET}!A:J'
+        ).execute()
+        rows = result.get('values', [])
+        if len(rows) <= 1:
+            return
+        egypt_tz = pytz.timezone('Africa/Cairo')
+        now = datetime.now(egypt_tz)
+        for i, row in enumerate(rows[1:], 1):
+            if len(row) < 9:
+                continue
+            task_name = row[1] if len(row) > 1 else ""
+            status = row[3] if len(row) > 3 else ""
+            deadline_str = row[8] if len(row) > 8 else ""
+            if not deadline_str or status in ["✅ منتهية"]:
+                continue
+            try:
+                deadline = datetime.strptime(deadline_str, "%Y-%m-%d").replace(tzinfo=egypt_tz)
+                diff = deadline - now
+                diff_minutes = diff.total_seconds() / 60
+                if 59 <= diff_minutes <= 61:
+                    await context.bot.send_message(
+                        chat_id=MAHMOUD_CHAT_ID,
+                        text=f"🔔 تنبيه يا محمود!\n\nالمهمة: *{task_name}*\nموعدها بعد ساعة! ⏰",
+                        parse_mode='Markdown'
+                    )
+                elif 9 <= diff_minutes <= 11:
+                    await context.bot.send_message(
+                        chat_id=MAHMOUD_CHAT_ID,
+                        text=f"⚠️ تنبيه عاجل يا محمود!\n\nالمهمة: *{task_name}*\nموعدها بعد 10 دقائق! 🚨",
+                        parse_mode='Markdown'
+                    )
+                elif -1 <= diff_minutes <= 1:
+                    await context.bot.send_message(
+                        chat_id=MAHMOUD_CHAT_ID,
+                        text=f"🚨 حان الوقت يا محمود!\n\nالمهمة: *{task_name}*\nالموعد دلوقتي! ⏰",
+                        parse_mode='Markdown'
+                    )
+            except:
+                continue
+    except Exception as e:
+        print(f"خطأ في التنبيهات: {e}")
+
 async def start_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global pending_task
     pending_task = {}
@@ -259,9 +309,7 @@ async def get_task_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✍️ اكتب الموعد النهائي (مثال: 2026-05-10):")
         return TASK_CUSTOM_DEADLINE
     pending_task['deadline'] = "" if data == "none" else data
-    keyboard = [
-        [InlineKeyboardButton("⏭️ بدون ملاحظات", callback_data="notes_none")]
-    ]
+    keyboard = [[InlineKeyboardButton("⏭️ بدون ملاحظات", callback_data="notes_none")]]
     await query.edit_message_text(
         f"✅ المهمة: *{pending_task['name']}*\n🎯 الأولوية: {pending_task['priority']}\n📅 الموعد: {pending_task['deadline'] or 'بدون موعد'}\n\nاكتب ملاحظات أو اضغط بدون ملاحظات:",
         parse_mode='Markdown',
@@ -271,9 +319,7 @@ async def get_task_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_custom_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_task['deadline'] = update.message.text
-    keyboard = [
-        [InlineKeyboardButton("⏭️ بدون ملاحظات", callback_data="notes_none")]
-    ]
+    keyboard = [[InlineKeyboardButton("⏭️ بدون ملاحظات", callback_data="notes_none")]]
     await update.message.reply_text(
         f"✅ المهمة: *{pending_task['name']}*\n🎯 الأولوية: {pending_task['priority']}\n📅 الموعد: {pending_task['deadline']}\n\nاكتب ملاحظات أو اضغط بدون ملاحظات:",
         parse_mode='Markdown',
@@ -399,6 +445,8 @@ def main():
         daily_reminder,
         time=datetime.strptime("08:00", "%H:%M").time().replace(tzinfo=egypt_tz)
     )
+    app.job_queue.run_repeating(check_task_reminders, interval=60, first=10)
+
     print("البوت شغال يا محمود!")
     app.run_polling()
 
