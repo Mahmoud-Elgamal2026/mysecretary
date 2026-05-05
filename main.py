@@ -1,5 +1,5 @@
 from groq import Groq
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler
 import requests
 from datetime import datetime, timedelta
@@ -17,11 +17,19 @@ SHEET_ID = "18uJrVBBjOOg51sReKhXdxmZdWnBsuAhZlEBda6K8JG8"
 TASKS_SHEET = "Tasks"
 MAHMOUD_CHAT_ID = None
 
-TASK_NAME, TASK_PRIORITY, TASK_DEADLINE, TASK_CUSTOM_DEADLINE, TASK_NOTES = range(5)
+TASK_NAME, TASK_PRIORITY, TASK_DEADLINE, TASK_CUSTOM_DEADLINE, TASK_NOTES, TASK_REMINDER = range(6)
 
 client = Groq(api_key=GROQ_KEY)
 conversation_history = []
 pending_task = {}
+
+def get_main_keyboard():
+    keyboard = [
+        [KeyboardButton("📋 مهامي"), KeyboardButton("➕ مهمة جديدة")],
+        [KeyboardButton("📅 مواعيدي"), KeyboardButton("📧 إيميلاتي")],
+        [KeyboardButton("🌤️ الطقس"), KeyboardButton("💬 تحدث معايا")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_google_creds():
     token_data = json.loads(os.environ.get('GOOGLE_TOKEN', '{}'))
@@ -59,7 +67,7 @@ def get_tasks():
     except Exception as e:
         return f"مش قادر اوصل للمهام: {e}"
 
-def add_task(task, priority="متوسطة", deadline="", notes=""):
+def add_task(task, priority="متوسطة", deadline="", notes="", reminder="60"):
     try:
         creds = get_google_creds()
         now = datetime.now(pytz.timezone('Africa/Cairo')).strftime("%Y-%m-%d %H:%M")
@@ -74,7 +82,7 @@ def add_task(task, priority="متوسطة", deadline="", notes=""):
             spreadsheetId=SHEET_ID,
             range=f'{TASKS_SHEET}!A:J',
             valueInputOption='RAW',
-            body={'values': [[task_num, task, priority, "جديدة", now, "", "", "", deadline, notes]]}
+            body={'values': [[task_num, task, priority, "جديدة", now, "", "", reminder, deadline, notes]]}
         ).execute()
         return f"✅ تمت إضافة المهمة: {task}"
     except Exception as e:
@@ -224,35 +232,24 @@ async def check_task_reminders(context):
             return
         egypt_tz = pytz.timezone('Africa/Cairo')
         now = datetime.now(egypt_tz)
-        for i, row in enumerate(rows[1:], 1):
+        for row in rows[1:]:
             if len(row) < 9:
                 continue
             task_name = row[1] if len(row) > 1 else ""
             status = row[3] if len(row) > 3 else ""
+            reminder_minutes = int(row[7]) if len(row) > 7 and row[7].isdigit() else 60
             deadline_str = row[8] if len(row) > 8 else ""
             if not deadline_str or status in ["✅ منتهية"]:
                 continue
             try:
                 deadline = datetime.strptime(deadline_str, "%Y-%m-%d").replace(tzinfo=egypt_tz)
-                diff = deadline - now
-                diff_minutes = diff.total_seconds() / 60
-                if 59 <= diff_minutes <= 61:
+                diff_minutes = (deadline - now).total_seconds() / 60
+                if reminder_minutes - 1 <= diff_minutes <= reminder_minutes + 1:
                     await context.bot.send_message(
                         chat_id=MAHMOUD_CHAT_ID,
-                        text=f"🔔 تنبيه يا محمود!\n\nالمهمة: *{task_name}*\nموعدها بعد ساعة! ⏰",
-                        parse_mode='Markdown'
-                    )
-                elif 9 <= diff_minutes <= 11:
-                    await context.bot.send_message(
-                        chat_id=MAHMOUD_CHAT_ID,
-                        text=f"⚠️ تنبيه عاجل يا محمود!\n\nالمهمة: *{task_name}*\nموعدها بعد 10 دقائق! 🚨",
-                        parse_mode='Markdown'
-                    )
-                elif -1 <= diff_minutes <= 1:
-                    await context.bot.send_message(
-                        chat_id=MAHMOUD_CHAT_ID,
-                        text=f"🚨 حان الوقت يا محمود!\n\nالمهمة: *{task_name}*\nالموعد دلوقتي! ⏰",
-                        parse_mode='Markdown'
+                        text=f"🔔 تنبيه يا محمود!\n\nالمهمة: *{task_name}*\nموعدها بعد {reminder_minutes} دقيقة! ⏰",
+                        parse_mode='Markdown',
+                        reply_markup=get_main_keyboard()
                     )
             except:
                 continue
@@ -309,19 +306,55 @@ async def get_task_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✍️ اكتب الموعد النهائي (مثال: 2026-05-10):")
         return TASK_CUSTOM_DEADLINE
     pending_task['deadline'] = "" if data == "none" else data
-    keyboard = [[InlineKeyboardButton("⏭️ بدون ملاحظات", callback_data="notes_none")]]
+    keyboard = [
+        [InlineKeyboardButton("⏰ 10 دقائق", callback_data="reminder_10"),
+         InlineKeyboardButton("⏰ 30 دقيقة", callback_data="reminder_30")],
+        [InlineKeyboardButton("⏰ ساعة", callback_data="reminder_60"),
+         InlineKeyboardButton("⏰ ساعتين", callback_data="reminder_120")],
+        [InlineKeyboardButton("⏰ يوم كامل", callback_data="reminder_1440"),
+         InlineKeyboardButton("✍️ وقت مخصص", callback_data="reminder_custom")],
+        [InlineKeyboardButton("🔕 بدون تنبيه", callback_data="reminder_none")]
+    ]
     await query.edit_message_text(
-        f"✅ المهمة: *{pending_task['name']}*\n🎯 الأولوية: {pending_task['priority']}\n📅 الموعد: {pending_task['deadline'] or 'بدون موعد'}\n\nاكتب ملاحظات أو اضغط بدون ملاحظات:",
+        f"✅ المهمة: *{pending_task['name']}*\n🎯 الأولوية: {pending_task['priority']}\n📅 الموعد: {pending_task['deadline'] or 'بدون موعد'}\n\nاختار وقت التنبيه:",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    return TASK_NOTES
+    return TASK_REMINDER
 
 async def get_custom_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_task['deadline'] = update.message.text
-    keyboard = [[InlineKeyboardButton("⏭️ بدون ملاحظات", callback_data="notes_none")]]
+    keyboard = [
+        [InlineKeyboardButton("⏰ 10 دقائق", callback_data="reminder_10"),
+         InlineKeyboardButton("⏰ 30 دقيقة", callback_data="reminder_30")],
+        [InlineKeyboardButton("⏰ ساعة", callback_data="reminder_60"),
+         InlineKeyboardButton("⏰ ساعتين", callback_data="reminder_120")],
+        [InlineKeyboardButton("⏰ يوم كامل", callback_data="reminder_1440"),
+         InlineKeyboardButton("✍️ وقت مخصص", callback_data="reminder_custom")],
+        [InlineKeyboardButton("🔕 بدون تنبيه", callback_data="reminder_none")]
+    ]
     await update.message.reply_text(
-        f"✅ المهمة: *{pending_task['name']}*\n🎯 الأولوية: {pending_task['priority']}\n📅 الموعد: {pending_task['deadline']}\n\nاكتب ملاحظات أو اضغط بدون ملاحظات:",
+        f"✅ المهمة: *{pending_task['name']}*\n🎯 الأولوية: {pending_task['priority']}\n📅 الموعد: {pending_task['deadline']}\n\nاختار وقت التنبيه:",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return TASK_REMINDER
+
+async def get_task_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data.replace("reminder_", "")
+    if data == "none":
+        pending_task['reminder'] = "0"
+    elif data == "custom":
+        await query.edit_message_text("✍️ اكتب وقت التنبيه بالدقائق (مثال: 45):")
+        return TASK_NOTES
+    else:
+        pending_task['reminder'] = data
+    keyboard = [[InlineKeyboardButton("⏭️ بدون ملاحظات", callback_data="notes_none")]]
+    reminder_text = {"0": "بدون تنبيه", "10": "10 دقائق", "30": "30 دقيقة", "60": "ساعة", "120": "ساعتين", "1440": "يوم كامل"}.get(pending_task['reminder'], f"{pending_task['reminder']} دقيقة")
+    await query.edit_message_text(
+        f"✅ المهمة: *{pending_task['name']}*\n🎯 الأولوية: {pending_task['priority']}\n📅 الموعد: {pending_task.get('deadline', '') or 'بدون موعد'}\n⏰ التنبيه: {reminder_text}\n\nاكتب ملاحظات أو اضغط بدون ملاحظات:",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -331,18 +364,26 @@ async def get_task_notes_callback(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     pending_task['notes'] = ""
-    result = add_task(pending_task['name'], pending_task['priority'], pending_task['deadline'], pending_task['notes'])
+    result = add_task(pending_task['name'], pending_task['priority'], pending_task.get('deadline', ''), pending_task['notes'], pending_task.get('reminder', '60'))
     await query.edit_message_text(f"{get_status_bar()}\n{'─'*30}\n{result}")
     return ConversationHandler.END
 
 async def get_task_notes_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if 'reminder' not in pending_task:
+        pending_task['reminder'] = update.message.text
+        keyboard = [[InlineKeyboardButton("⏭️ بدون ملاحظات", callback_data="notes_none")]]
+        await update.message.reply_text(
+            f"✅ التنبيه: {pending_task['reminder']} دقيقة\n\nاكتب ملاحظات أو اضغط بدون ملاحظات:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return TASK_NOTES
     pending_task['notes'] = update.message.text
-    result = add_task(pending_task['name'], pending_task['priority'], pending_task['deadline'], pending_task['notes'])
-    await update.message.reply_text(f"{get_status_bar()}\n{'─'*30}\n{result}")
+    result = add_task(pending_task['name'], pending_task['priority'], pending_task.get('deadline', ''), pending_task['notes'], pending_task.get('reminder', '60'))
+    await update.message.reply_text(f"{get_status_bar()}\n{'─'*30}\n{result}", reply_markup=get_main_keyboard())
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("تم الإلغاء!")
+    await update.message.reply_text("تم الإلغاء!", reply_markup=get_main_keyboard())
     return ConversationHandler.END
 
 async def daily_reminder(context):
@@ -350,13 +391,34 @@ async def daily_reminder(context):
         tasks = get_tasks()
         calendar = get_calendar_events()
         msg = f"🌅 صباح الخير يا محمود!\n\n📋 مهامك النهارده:\n{tasks}\n\n📆 مواعيدك:\n{calendar}"
-        await context.bot.send_message(chat_id=MAHMOUD_CHAT_ID, text=msg)
+        await context.bot.send_message(chat_id=MAHMOUD_CHAT_ID, text=msg, reply_markup=get_main_keyboard())
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global MAHMOUD_CHAT_ID
     MAHMOUD_CHAT_ID = update.message.chat_id
     user_text = update.message.text
     status_bar = get_status_bar()
+
+    if user_text == "📋 مهامي":
+        tasks = get_tasks()
+        await update.message.reply_text(f"{status_bar}\n{'─'*30}\n📋 مهامك:\n{tasks}", reply_markup=get_main_keyboard())
+        return
+    elif user_text == "➕ مهمة جديدة":
+        await start_add_task(update, context)
+        return
+    elif user_text == "📅 مواعيدي":
+        calendar = get_calendar_events()
+        await update.message.reply_text(f"{status_bar}\n{'─'*30}\n📅 مواعيدك:\n{calendar}", reply_markup=get_main_keyboard())
+        return
+    elif user_text == "📧 إيميلاتي":
+        gmail = get_gmail_summary()
+        await update.message.reply_text(f"{status_bar}\n{'─'*30}\n📧 {gmail}", reply_markup=get_main_keyboard())
+        return
+    elif user_text == "🌤️ الطقس":
+        weather = get_weather()
+        await update.message.reply_text(f"{status_bar}\n{'─'*30}\n🌤️ الطقس: {weather}", reply_markup=get_main_keyboard())
+        return
+
     calendar = get_calendar_events()
     gmail = get_gmail_summary()
     tasks = get_tasks()
@@ -368,7 +430,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     system_prompt = f"""أنت سكرتير محمود الشخصي، ذكي وفرفوش وبترد بلهجة مصرية عامية شيك.
 ناديه دايماً بـ "محمود".
 لو طلب ترجمة، ترجملهوله على طول.
-لو طلب إضافة مهمة: ADD_TASK
 لو قال خلصت مهمة [رقم]: COMPLETE_TASK:[رقم]
 لو قال وقفت مهمة [رقم]: PAUSE_TASK:[رقم]
 لو قال شغال على مهمة [رقم]: START_TASK:[رقم]
@@ -390,45 +451,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conversation_history.append({"role": "assistant", "content": bot_response})
         first_line = bot_response.strip().split("\n")[0].strip()
 
-        if "ADD_TASK" in first_line:
-            await start_add_task(update, context)
-            return
-        elif first_line.startswith("COMPLETE_TASK:"):
+        if first_line.startswith("COMPLETE_TASK:"):
             num = int(first_line.replace("COMPLETE_TASK:", "").strip())
             result = update_task_status(num, "✅ منتهية")
-            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
+            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}", reply_markup=get_main_keyboard())
         elif first_line.startswith("PAUSE_TASK:"):
             num = int(first_line.replace("PAUSE_TASK:", "").strip())
             result = update_task_status(num, "⏸️ موقوفة")
-            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
+            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}", reply_markup=get_main_keyboard())
         elif first_line.startswith("START_TASK:"):
             num = int(first_line.replace("START_TASK:", "").strip())
             result = update_task_status(num, "🔄 شغال")
-            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
+            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}", reply_markup=get_main_keyboard())
         elif first_line.startswith("DELETE_TASK:"):
             num = int(first_line.replace("DELETE_TASK:", "").strip())
             result = delete_task(num)
-            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
+            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}", reply_markup=get_main_keyboard())
         elif "DELETE_ALL_TASKS" in first_line:
             result = delete_all_tasks()
-            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
+            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}", reply_markup=get_main_keyboard())
         else:
-            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{bot_response}")
+            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{bot_response}", reply_markup=get_main_keyboard())
 
     except Exception as e:
         print(f"خطأ: {e}")
-        await update.message.reply_text("حصل دروب يا محمود، بعت تاني!")
+        await update.message.reply_text("حصل دروب يا محمود، بعت تاني!", reply_markup=get_main_keyboard())
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("(?i)أضف مهمة|add task|مهمة جديدة|اضف مهمة"), start_add_task)],
+        entry_points=[MessageHandler(filters.Regex("➕ مهمة جديدة"), start_add_task)],
         states={
             TASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_task_name)],
             TASK_PRIORITY: [CallbackQueryHandler(get_task_priority, pattern="^priority_")],
             TASK_DEADLINE: [CallbackQueryHandler(get_task_deadline, pattern="^deadline_")],
             TASK_CUSTOM_DEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_custom_deadline)],
+            TASK_REMINDER: [CallbackQueryHandler(get_task_reminder, pattern="^reminder_")],
             TASK_NOTES: [
                 CallbackQueryHandler(get_task_notes_callback, pattern="^notes_none"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_task_notes_text)
