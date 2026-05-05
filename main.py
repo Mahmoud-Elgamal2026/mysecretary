@@ -1,8 +1,8 @@
 from groq import Groq
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import Application, MessageHandler, filters, ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import os
 import json
@@ -17,8 +17,11 @@ SHEET_ID = "18uJrVBBjOOg51sReKhXdxmZdWnBsuAhZlEBda6K8JG8"
 TASKS_SHEET = "Tasks"
 MAHMOUD_CHAT_ID = None
 
+TASK_NAME, TASK_PRIORITY, TASK_DEADLINE, TASK_CUSTOM_DEADLINE, TASK_NOTES = range(5)
+
 client = Groq(api_key=GROQ_KEY)
 conversation_history = []
+pending_task = {}
 
 def get_google_creds():
     token_data = json.loads(os.environ.get('GOOGLE_TOKEN', '{}'))
@@ -111,18 +114,7 @@ def delete_task(task_num):
                 break
         service.spreadsheets().batchUpdate(
             spreadsheetId=SHEET_ID,
-            body={
-                'requests': [{
-                    'deleteDimension': {
-                        'range': {
-                            'sheetId': sheet_id,
-                            'dimension': 'ROWS',
-                            'startIndex': task_num,
-                            'endIndex': task_num + 1
-                        }
-                    }
-                }]
-            }
+            body={'requests': [{'deleteDimension': {'range': {'sheetId': sheet_id, 'dimension': 'ROWS', 'startIndex': task_num, 'endIndex': task_num + 1}}}]}
         ).execute()
         return f"✅ تم حذف المهمة رقم {task_num}"
     except Exception as e:
@@ -138,27 +130,13 @@ def delete_all_tasks():
             if sheet['properties']['title'] == TASKS_SHEET:
                 sheet_id = sheet['properties']['sheetId']
                 break
-        result = service.spreadsheets().values().get(
-            spreadsheetId=SHEET_ID,
-            range=f'{TASKS_SHEET}!A:A'
-        ).execute()
+        result = service.spreadsheets().values().get(spreadsheetId=SHEET_ID, range=f'{TASKS_SHEET}!A:A').execute()
         rows = result.get('values', [])
         if len(rows) <= 1:
             return "مفيش مهام تتحذف"
         service.spreadsheets().batchUpdate(
             spreadsheetId=SHEET_ID,
-            body={
-                'requests': [{
-                    'deleteDimension': {
-                        'range': {
-                            'sheetId': sheet_id,
-                            'dimension': 'ROWS',
-                            'startIndex': 1,
-                            'endIndex': len(rows)
-                        }
-                    }
-                }]
-            }
+            body={'requests': [{'deleteDimension': {'range': {'sheetId': sheet_id, 'dimension': 'ROWS', 'startIndex': 1, 'endIndex': len(rows)}}}]}
         ).execute()
         return "✅ تم حذف كل المهام!"
     except Exception as e:
@@ -168,11 +146,7 @@ def get_gmail_summary():
     try:
         creds = get_google_creds()
         service = build('gmail', 'v1', credentials=creds)
-        results = service.users().messages().list(
-            userId='me',
-            labelIds=['INBOX', 'UNREAD'],
-            maxResults=5
-        ).execute()
+        results = service.users().messages().list(userId='me', labelIds=['INBOX', 'UNREAD'], maxResults=5).execute()
         messages = results.get('messages', [])
         if not messages:
             return "مفيش إيميلات جديدة"
@@ -185,13 +159,7 @@ def get_calendar_events():
         creds = get_google_creds()
         service = build('calendar', 'v3', credentials=creds)
         now = datetime.utcnow().isoformat() + 'Z'
-        events_result = service.events().list(
-            calendarId='primary',
-            timeMin=now,
-            maxResults=5,
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
+        events_result = service.events().list(calendarId='primary', timeMin=now, maxResults=5, singleEvents=True, orderBy='startTime').execute()
         events = events_result.get('items', [])
         if not events:
             return "مفيش مواعيد قادمة"
@@ -218,8 +186,7 @@ def get_datetime():
     egypt_tz = pytz.timezone('Africa/Cairo')
     now = datetime.now(egypt_tz)
     days_ar = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
-    months_ar = ["يناير", "فبراير", "مارس", "إبريل", "مايو", "يونيو",
-                 "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
+    months_ar = ["يناير", "فبراير", "مارس", "إبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
     day_name = days_ar[now.weekday()]
     date_str = f"{now.day} {months_ar[now.month-1]} {now.year}"
     time_str = now.strftime("%I:%M %p").replace("AM", "ص").replace("PM", "م")
@@ -236,6 +203,102 @@ def get_weather():
     except:
         return "مش متاح"
 
+def get_status_bar():
+    day_name, date_str, time_str = get_datetime()
+    weather = get_weather()
+    hijri = get_hijri_date()
+    return f"📅 {day_name} {date_str} | {hijri}\n🕐 {time_str} | 🌡️ {weather}"
+
+async def start_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global pending_task
+    pending_task = {}
+    await update.message.reply_text("✍️ اكتب اسم المهمة:")
+    return TASK_NAME
+
+async def get_task_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pending_task['name'] = update.message.text
+    keyboard = [
+        [InlineKeyboardButton("🔴 عالية", callback_data="priority_عالية"),
+         InlineKeyboardButton("🟡 متوسطة", callback_data="priority_متوسطة"),
+         InlineKeyboardButton("🟢 منخفضة", callback_data="priority_منخفضة")]
+    ]
+    await update.message.reply_text(
+        f"✅ المهمة: *{pending_task['name']}*\n\nاختار الأولوية:",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return TASK_PRIORITY
+
+async def get_task_priority(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    pending_task['priority'] = query.data.replace("priority_", "")
+    egypt_tz = pytz.timezone('Africa/Cairo')
+    today = datetime.now(egypt_tz).strftime("%Y-%m-%d")
+    tomorrow = (datetime.now(egypt_tz) + timedelta(days=1)).strftime("%Y-%m-%d")
+    next_week = (datetime.now(egypt_tz) + timedelta(days=7)).strftime("%Y-%m-%d")
+    keyboard = [
+        [InlineKeyboardButton("📅 النهارده", callback_data=f"deadline_{today}"),
+         InlineKeyboardButton("📅 بكره", callback_data=f"deadline_{tomorrow}")],
+        [InlineKeyboardButton("📅 الأسبوع الجاي", callback_data=f"deadline_{next_week}"),
+         InlineKeyboardButton("✍️ اكتب تاريخ", callback_data="deadline_custom")],
+        [InlineKeyboardButton("⏭️ بدون موعد", callback_data="deadline_none")]
+    ]
+    await query.edit_message_text(
+        f"✅ المهمة: *{pending_task['name']}*\n🎯 الأولوية: {pending_task['priority']}\n\nاختار الموعد النهائي:",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return TASK_DEADLINE
+
+async def get_task_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data.replace("deadline_", "")
+    if data == "custom":
+        await query.edit_message_text("✍️ اكتب الموعد النهائي (مثال: 2026-05-10):")
+        return TASK_CUSTOM_DEADLINE
+    pending_task['deadline'] = "" if data == "none" else data
+    keyboard = [
+        [InlineKeyboardButton("⏭️ بدون ملاحظات", callback_data="notes_none")]
+    ]
+    await query.edit_message_text(
+        f"✅ المهمة: *{pending_task['name']}*\n🎯 الأولوية: {pending_task['priority']}\n📅 الموعد: {pending_task['deadline'] or 'بدون موعد'}\n\nاكتب ملاحظات أو اضغط بدون ملاحظات:",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return TASK_NOTES
+
+async def get_custom_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pending_task['deadline'] = update.message.text
+    keyboard = [
+        [InlineKeyboardButton("⏭️ بدون ملاحظات", callback_data="notes_none")]
+    ]
+    await update.message.reply_text(
+        f"✅ المهمة: *{pending_task['name']}*\n🎯 الأولوية: {pending_task['priority']}\n📅 الموعد: {pending_task['deadline']}\n\nاكتب ملاحظات أو اضغط بدون ملاحظات:",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return TASK_NOTES
+
+async def get_task_notes_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    pending_task['notes'] = ""
+    result = add_task(pending_task['name'], pending_task['priority'], pending_task['deadline'], pending_task['notes'])
+    await query.edit_message_text(f"{get_status_bar()}\n{'─'*30}\n{result}")
+    return ConversationHandler.END
+
+async def get_task_notes_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pending_task['notes'] = update.message.text
+    result = add_task(pending_task['name'], pending_task['priority'], pending_task['deadline'], pending_task['notes'])
+    await update.message.reply_text(f"{get_status_bar()}\n{'─'*30}\n{result}")
+    return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("تم الإلغاء!")
+    return ConversationHandler.END
+
 async def daily_reminder(context):
     if MAHMOUD_CHAT_ID:
         tasks = get_tasks()
@@ -247,14 +310,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global MAHMOUD_CHAT_ID
     MAHMOUD_CHAT_ID = update.message.chat_id
     user_text = update.message.text
-    day_name, date_str, time_str = get_datetime()
-    weather = get_weather()
-    hijri = get_hijri_date()
+    status_bar = get_status_bar()
     calendar = get_calendar_events()
     gmail = get_gmail_summary()
     tasks = get_tasks()
-
-    status_bar = f"📅 {day_name} {date_str} | {hijri}\n🕐 {time_str} | 🌡️ {weather}"
 
     conversation_history.append({"role": "user", "content": user_text})
     if len(conversation_history) > 20:
@@ -263,7 +322,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     system_prompt = f"""أنت سكرتير محمود الشخصي، ذكي وفرفوش وبترد بلهجة مصرية عامية شيك.
 ناديه دايماً بـ "محمود".
 لو طلب ترجمة، ترجملهوله على طول.
-لو طلب إضافة مهمة، ردك يكون بالضبط على السطر الأول فقط: ADD_TASK:[اسم المهمة فقط]
+لو طلب إضافة مهمة: ADD_TASK
 لو قال خلصت مهمة [رقم]: COMPLETE_TASK:[رقم]
 لو قال وقفت مهمة [رقم]: PAUSE_TASK:[رقم]
 لو قال شغال على مهمة [رقم]: START_TASK:[رقم]
@@ -280,19 +339,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages = [{"role": "system", "content": system_prompt}] + conversation_history
 
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages
-        )
+        response = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=messages)
         bot_response = response.choices[0].message.content
         conversation_history.append({"role": "assistant", "content": bot_response})
-
         first_line = bot_response.strip().split("\n")[0].strip()
 
-        if first_line.startswith("ADD_TASK:"):
-            task = first_line.replace("ADD_TASK:", "").strip()
-            result = add_task(task)
-            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
+        if "ADD_TASK" in first_line:
+            await start_add_task(update, context)
+            return
         elif first_line.startswith("COMPLETE_TASK:"):
             num = int(first_line.replace("COMPLETE_TASK:", "").strip())
             result = update_task_status(num, "✅ منتهية")
@@ -313,8 +367,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result = delete_all_tasks()
             await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{result}")
         else:
-            full_response = f"{status_bar}\n{'─'*30}\n{bot_response}"
-            await update.message.reply_text(full_response)
+            await update.message.reply_text(f"{status_bar}\n{'─'*30}\n{bot_response}")
 
     except Exception as e:
         print(f"خطأ: {e}")
@@ -322,7 +375,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("(?i)أضف مهمة|add task|مهمة جديدة|اضف مهمة"), start_add_task)],
+        states={
+            TASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_task_name)],
+            TASK_PRIORITY: [CallbackQueryHandler(get_task_priority, pattern="^priority_")],
+            TASK_DEADLINE: [CallbackQueryHandler(get_task_deadline, pattern="^deadline_")],
+            TASK_CUSTOM_DEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_custom_deadline)],
+            TASK_NOTES: [
+                CallbackQueryHandler(get_task_notes_callback, pattern="^notes_none"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_task_notes_text)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    )
+
+    app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
     egypt_tz = pytz.timezone('Africa/Cairo')
     app.job_queue.run_daily(
         daily_reminder,
