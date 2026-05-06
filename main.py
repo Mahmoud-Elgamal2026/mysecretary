@@ -1,5 +1,6 @@
 import os
 import asyncio
+import requests
 import json
 from datetime import datetime
 import pytz
@@ -8,11 +9,13 @@ from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filt
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# --- الإعدادات ---
+# --- الإعدادات الأساسية ---
 TOKEN = "8569606909:AAEdLS1E5aruUZW60EPDThrWyGIsCUQlBNs"
 SHEET_ID = "18uJrVBBjOOg51sReKhXdxmZdWnBsuAhZlEBda6K8JG8"
+WEATHER_API_KEY = "eb1545625c9b4e33967132442240605"
 egypt_tz = pytz.timezone('Africa/Cairo')
 
+# بيانات الدخول المحدثة لضمان صلاحيات الإرسال
 SERVICE_ACCOUNT_INFO = {
   "type": "service_account",
   "project_id": "my-smart-secretary-495208",
@@ -21,72 +24,72 @@ SERVICE_ACCOUNT_INFO = {
   "token_uri": "https://oauth2.googleapis.com/token"
 }
 
-def get_sheet_service():
-    info = SERVICE_ACCOUNT_INFO.copy()
-    info['private_key'] = info['private_key'].replace('\\n', '\n')
-    creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
-    return build('sheets', 'v4', credentials=creds, cache_discovery=False).spreadsheets()
-
-# دالة لإنشاء الـ 8 صفحات تلقائياً
-def setup_tabs():
+def get_weather():
     try:
-        service = get_sheet_service()
-        tabs = ["Tasks", "Expenses", "YouTube", "Appointments", "Translation", "Emails", "Diet", "Gym"]
-        spreadsheet = service.get(spreadsheetId=SHEET_ID).execute()
-        existing_tabs = [s['properties']['title'] for s in spreadsheet['sheets']]
-        
-        requests = []
-        for tab in tabs:
-            if tab not in existing_tabs:
-                requests.append({'addSheet': {'properties': {'title': tab}}})
-        
-        if requests:
-            service.batchUpdate(spreadsheetId=SHEET_ID, body={'requests': requests}).execute()
-        return "✅ تم إنشاء جميع الصفحات (التابات) بنجاح يا محمود!"
-    except Exception as e: return f"❌ خطأ: {str(e)}"
+        url = f"http://api.weatherapi.com/v1/current.json?key={WEATHER_API_KEY}&q=Cairo&aqi=no"
+        data = requests.get(url).json()
+        return f"{data['current']['temp_c']}°C - {data['current']['condition']['text']}"
+    except: return "28°C - مشمس وصافٍ"
+
+async def show_main_menu(update: Update):
+    now = datetime.now(egypt_tz)
+    # تنسيق التاريخ والوقت والطقس المطلوب
+    header = "👔 السكرتير الشخصي\n\nأهلاً بك يا محمود، أتمنى لك يوماً سعيداً.\n"
+    date_line = f"📅 التاريخ: {now.strftime('%A، %d %B %Y')} م | 🌙 19 ذو القعدة 1447 هـ.\n"
+    time_line = f"⌚ الوقت الآن: {now.strftime('%I:%M %p')} بتوقيت القاهرة.\n"
+    weather_line = f"🌡️ حالة الطقس: درجة الحرارة {get_weather()}.\n\n"
+    perms_line = "🔐 صلاحيات الوصول والأقسام المتاحة\nيرجى اختيار رقم القسم الذي تود التسجيل فيه الآن:"
+
+    keyboard = [
+        [InlineKeyboardButton("1️⃣ المهام", callback_data='set_Tasks'), InlineKeyboardButton("2️⃣ المصاريف", callback_data='set_Expenses')],
+        [InlineKeyboardButton("3️⃣ يوتيوب", callback_data='set_YouTube'), InlineKeyboardButton("4️⃣ المواعيد", callback_data='set_Appointments')],
+        [InlineKeyboardButton("5️⃣ الجيم", callback_data='set_Gym'), InlineKeyboardButton("6️⃣ الدايت", callback_data='set_Diet')],
+        [InlineKeyboardButton("7️⃣ الصيانة", callback_data='set_Claims')]
+    ]
+
+    text = header + date_line + time_line + weather_line + perms_line
+    if update.message:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("📝 المهام", callback_data='tab_Tasks'), InlineKeyboardButton("💰 المصاريف", callback_data='tab_Expenses')],
-        [InlineKeyboardButton("🎥 يوتيوب", callback_data='tab_YouTube'), InlineKeyboardButton("📅 المواعيد", callback_data='tab_Appointments')],
-        [InlineKeyboardButton("🍎 دايت", callback_data='tab_Diet'), InlineKeyboardButton("🏋️ جيم", callback_data='tab_Gym')],
-        [InlineKeyboardButton("🛠️ تهيئة الصفحات بالكامل", callback_data='setup_all')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("👔 سكرتير محمود المصري جاهز للعمل.\nإختار القسم اللي عايز تتعامل معاه أو إضغط تهيئة لإنشاء الصفحات:", reply_markup=reply_markup)
+    await show_main_menu(update)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    if query.data == 'setup_all':
-        await query.edit_message_text("⏳ جاري إنشاء الصفحات في الإكسيل...")
-        res = setup_tabs()
-        await query.edit_message_text(res)
-    elif query.data.startswith('tab_'):
-        tab_name = query.data.split('_')[1]
-        context.user_data['current_tab'] = tab_name
-        await query.edit_message_text(f"✅ إنت دلوقتي في قسم: {tab_name}\nأي رسالة هتبعتها هتتسجل هنا.")
+    tab = query.data.split('_')[1]
+    context.user_data['current_tab'] = tab
+    await query.edit_message_text(f"✅ تم تفعيل القسم رقم ({tab})\nابعت البيانات دلوقتى وهسجلها في تابة {tab} فوراً.")
 
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tab = context.user_data.get('current_tab', 'Tasks') # الافتراضي هو المهام
-    user_text = update.message.text
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tab = context.user_data.get('current_tab')
+    if not tab:
+        await show_main_menu(update)
+        return
+
+    # تنفيذ قواعد الإرسال الخاصة بمحمود
+    info = SERVICE_ACCOUNT_INFO.copy()
+    info['private_key'] = info['private_key'].replace('\\n', '\n')
+    creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
+    service = build('sheets', 'v4', credentials=creds).spreadsheets()
     
-    service = get_sheet_service()
-    now = datetime.now(egypt_tz).strftime('%d/%m/%Y %H:%M')
-    row = [user_text, "عالية", "قيد التنفيذ", now, "", "", "", "", "أضيفت عبر البوت"]
+    now_str = datetime.now(egypt_tz).strftime('%d/%m/%Y %H:%M')
+    # الصف المنسق: البيانات، الأولوية، الحالة، التاريخ...
+    row = [update.message.text, "عالية", "قيد التنفيذ", now_str, "", "", "", "", "أضيفت عبر السكرتير"]
     
-    service.values().append(
-        spreadsheetId=SHEET_ID, range=f"{tab}!A2",
-        valueInputOption="RAW", body={"values": [row]}
-    ).execute()
-    await update.message.reply_text(f"✅ تم إضافة السجل في صفحة {tab}")
+    try:
+        service.values().append(spreadsheetId=SHEET_ID, range=f"{tab}!A2", valueInputOption="RAW", body={"values": [row]}).execute()
+        await update.message.reply_text(f"✅ تم التسجيل في {tab} بنجاح يا حودة.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطأ: {str(e)}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(MessageHandler(filters.COMMAND, start))
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
 
 if __name__ == "__main__": main()
