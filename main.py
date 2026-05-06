@@ -1,18 +1,18 @@
 import os
 import asyncio
+import json
 from datetime import datetime
 import pytz
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# --- الإعدادات الأساسية ---
+# --- الإعدادات ---
 TOKEN = "8569606909:AAEdLS1E5aruUZW60EPDThrWyGIsCUQlBNs"
 SHEET_ID = "18uJrVBBjOOg51sReKhXdxmZdWnBsuAhZlEBda6K8JG8"
 egypt_tz = pytz.timezone('Africa/Cairo')
 
-# بيانات الـ Service Account الجديدة (تم تنظيف المفتاح برمجياً ليعمل فوراً)
 SERVICE_ACCOUNT_INFO = {
   "type": "service_account",
   "project_id": "my-smart-secretary-495208",
@@ -22,40 +22,71 @@ SERVICE_ACCOUNT_INFO = {
 }
 
 def get_sheet_service():
-    # تنظيف المفتاح من أي رموز هروب ناتجة عن النسخ
     info = SERVICE_ACCOUNT_INFO.copy()
     info['private_key'] = info['private_key'].replace('\\n', '\n')
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
+    creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
     return build('sheets', 'v4', credentials=creds, cache_discovery=False).spreadsheets()
 
-def add_task_to_sheet(task_name):
+# دالة لإنشاء الـ 8 صفحات تلقائياً
+def setup_tabs():
     try:
         service = get_sheet_service()
-        now_date = datetime.now(egypt_tz).strftime('%d/%m/%Y')
-        now_time = datetime.now(egypt_tz).strftime('%H:%M')
-        # الترتيب حسب شيت محمود: المهمة، الأولوية، الحالة، تاريخ الإضافة...
-        row_data = [task_name, "متوسطة", "قيد التنفيذ", now_date, now_time, "", "", "", "إضافة ذكية ✅"]
-        service.values().append(
-            spreadsheetId=SHEET_ID, range="Tasks!A2",
-            valueInputOption="RAW", body={"values": [row_data]}
-        ).execute()
-        return "✅ زي الفل يا محمود، المهمة نزلت في الشيت!"
-    except Exception as e:
-        return f"❌ خطأ تقني: {str(e)}"
+        tabs = ["Tasks", "Expenses", "YouTube", "Appointments", "Translation", "Emails", "Diet", "Gym"]
+        spreadsheet = service.get(spreadsheetId=SHEET_ID).execute()
+        existing_tabs = [s['properties']['title'] for s in spreadsheet['sheets']]
+        
+        requests = []
+        for tab in tabs:
+            if tab not in existing_tabs:
+                requests.append({'addSheet': {'properties': {'title': tab}}})
+        
+        if requests:
+            service.batchUpdate(spreadsheetId=SHEET_ID, body={'requests': requests}).execute()
+        return "✅ تم إنشاء جميع الصفحات (التابات) بنجاح يا محمود!"
+    except Exception as e: return f"❌ خطأ: {str(e)}"
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("📝 المهام", callback_data='tab_Tasks'), InlineKeyboardButton("💰 المصاريف", callback_data='tab_Expenses')],
+        [InlineKeyboardButton("🎥 يوتيوب", callback_data='tab_YouTube'), InlineKeyboardButton("📅 المواعيد", callback_data='tab_Appointments')],
+        [InlineKeyboardButton("🍎 دايت", callback_data='tab_Diet'), InlineKeyboardButton("🏋️ جيم", callback_data='tab_Gym')],
+        [InlineKeyboardButton("🛠️ تهيئة الصفحات بالكامل", callback_data='setup_all')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("👔 سكرتير محمود المصري جاهز للعمل.\nإختار القسم اللي عايز تتعامل معاه أو إضغط تهيئة لإنشاء الصفحات:", reply_markup=reply_markup)
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == 'setup_all':
+        await query.edit_message_text("⏳ جاري إنشاء الصفحات في الإكسيل...")
+        res = setup_tabs()
+        await query.edit_message_text(res)
+    elif query.data.startswith('tab_'):
+        tab_name = query.data.split('_')[1]
+        context.user_data['current_tab'] = tab_name
+        await query.edit_message_text(f"✅ إنت دلوقتي في قسم: {tab_name}\nأي رسالة هتبعتها هتتسجل هنا.")
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tab = context.user_data.get('current_tab', 'Tasks') # الافتراضي هو المهام
     user_text = update.message.text
-    if user_text.startswith('/'): return 
-    status = await update.message.reply_text("⏳ جاري التسجيل...")
-    res = add_task_to_sheet(user_text)
-    await status.edit_text(res)
+    
+    service = get_sheet_service()
+    now = datetime.now(egypt_tz).strftime('%d/%m/%Y %H:%M')
+    row = [user_text, "عالية", "قيد التنفيذ", now, "", "", "", "", "أضيفت عبر البوت"]
+    
+    service.values().append(
+        spreadsheetId=SHEET_ID, range=f"{tab}!A2",
+        valueInputOption="RAW", body={"values": [row]}
+    ).execute()
+    await update.message.reply_text(f"✅ تم إضافة السجل في صفحة {tab}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 سكرتير محمود المصري جاهز بالبيانات الجديدة!")
+    app.add_handler(MessageHandler(filters.COMMAND, start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.run_polling()
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
