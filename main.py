@@ -27,19 +27,17 @@ def get_weather():
         url = f"http://api.weatherapi.com/v1/current.json?key={WEATHER_API_KEY}&q=Cairo&aqi=no"
         data = requests.get(url).json()
         return f"{data['current']['temp_c']}°C - {data['current']['condition']['text']}"
-    except: return "28°C - مشمس وصافٍ"
+    except: return "28°C - مشمس"
 
-async def show_main_menu(update: Update):
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(egypt_tz)
-    # تنسيق الواجهة الاحترافي والمدمج
+    # التنسيق الاحترافي بخط صغير (Monospace)
     text = (
-        "### 👔 **السكرتير الشخصي**\n"
-        "**أهلاً بك يا محمود، أتمنى لك يوماً سعيداً.**\n"
-        f"🗓️ **التاريخ:** {now.strftime('%A, %d %B %Y')} | 🌙 19 ذو القعدة 1447 هـ\n"
-        f"⌚ **الوقت:** {now.strftime('%I:%M %p')} (القاهرة) | 🌡️ **الطقس:** {get_weather()}\n\n"
-        "--- \n"
-        "**🔐 صلاحيات الوصول والأقسام المتاحة**\n"
-        "*يرجى اختيار رقم القسم المطلوب للتسجيل الفوري:*"
+        "👔 **السكرتير الشخصي**\n"
+        "أهلاً بك يا محمود، أتمنى لك يوماً سعيداً\\.\n\n"
+        f"`🗓️ {now.strftime('%a, %d %b %Y')} | 🌙 19 ذو القعدة 1447` \n"
+        f"`⌚ {now.strftime('%I:%M %p')} (Cairo) | 🌡️ {get_weather()}` \n"
+        "─── 🔐 **الأقسام المتاحة** ───"
     )
     
     keyboard = [
@@ -49,25 +47,38 @@ async def show_main_menu(update: Update):
         [InlineKeyboardButton("7️⃣ الصيانة", callback_data='set_Claims')]
     ]
 
+    context.user_data['current_tab'] = None
+    
     if update.message:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='MarkdownV2')
     else:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='MarkdownV2')
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu(update)
+    await show_main_menu(update, context)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    if query.data == 'main_menu':
+        await show_main_menu(update, context)
+        return
+
     tab = query.data.split('_')[1]
     context.user_data['current_tab'] = tab
-    await query.edit_message_text(f"✅ تم تفعيل القسم رقم ({tab})\n\nابعت البيانات دلوقتى وهسجلها في تابة **{tab}** فوراً.")
+    
+    keyboard = [[InlineKeyboardButton("🔙 رجوع للرئيسية", callback_data='main_menu')]]
+    await query.edit_message_text(
+        f"✅ تم تفعيل: **{tab}**\nأرسل البيانات للتسجيل، أو اضغط رجوع لتغيير القسم\\.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='MarkdownV2'
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tab = context.user_data.get('current_tab')
     if not tab:
-        await show_main_menu(update)
+        await show_main_menu(update, context)
         return
 
     info = SERVICE_ACCOUNT_INFO.copy()
@@ -76,20 +87,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = build('sheets', 'v4', credentials=creds).spreadsheets()
     
     now_str = datetime.now(egypt_tz).strftime('%d/%m/%Y %H:%M')
-    # تطبيق قواعد محمود: البيانات، الحالة، التاريخ...
     row = [update.message.text, "عالية", "قيد التنفيذ", now_str, "", "", "", "", "سجل السكرتير"]
     
     try:
         service.values().append(spreadsheetId=SHEET_ID, range=f"{tab}!A2", valueInputOption="RAW", body={"values": [row]}).execute()
-        await update.message.reply_text(f"✅ تم التسجيل في **{tab}** بنجاح يا حودة.")
+        keyboard = [[InlineKeyboardButton("🔙 رجوع للرئيسية", callback_data='main_menu')]]
+        await update.message.reply_text(f"✅ تم التسجيل في {tab}", reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
         await update.message.reply_text(f"❌ خطأ: {str(e)}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(MessageHandler(filters.COMMAND, start))
+    app.add_handler(MessageHandler(filters.ALL, start)) # أي رسالة تفتح الصلاحيات لو مفيش قسم مفعل
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
 
 if __name__ == "__main__": main()
