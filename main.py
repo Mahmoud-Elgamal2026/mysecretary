@@ -1,5 +1,3 @@
-import os
-import asyncio
 import requests
 from datetime import datetime
 import pytz
@@ -22,19 +20,19 @@ SERVICE_ACCOUNT_INFO = {
   "token_uri": "https://oauth2.googleapis.com/token"
 }
 
+# دالة لجلب الطقس بالعربي
 def get_weather():
     try:
         url = f"http://api.weatherapi.com/v1/current.json?key={WEATHER_API_KEY}&q=Cairo&lang=ar"
         data = requests.get(url).json()
-        temp = data['current']['temp_c']
-        condition = data['current']['condition']['text']
-        return f"{int(temp)}°C | {condition}"
+        return f"{int(data['current']['temp_c'])}°C | {data['current']['condition']['text']}"
     except: return "20°C | سماء صافية"
 
+# واجهة لوحة التحكم
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(egypt_tz)
-    # التاريخ والوقت بالظبط زي الصورة
     header = "<b>👔 السكرتير الشخصي</b>\n"
+    # التاريخ والوقت بالظبط زي ما طلبت
     date_line = f"📅 الأربعاء 6 مايو 2026 | 19 ذوالقعدة 1447 هـ\n"
     time_weather = f"🕒 {now.strftime('%I:%M %p')} | 🌡️ {get_weather()}\n"
     line = "______________________________\n"
@@ -47,12 +45,13 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("7 الصيانة", callback_data='set_Claims')]
     ]
 
-    full_text = f"{header}{date_line}{time_weather}{line}{perms}"
+    context.user_data['current_tab'] = None
+    text = f"{header}{date_line}{time_weather}{line}{perms}"
     
     if update.message:
-        await update.message.reply_text(full_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
     else:
-        await update.callback_query.edit_message_text(full_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update, context)
@@ -60,16 +59,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     if query.data == 'main_menu':
         await show_main_menu(update, context)
         return
-
+    
     tab = query.data.split('_')[1]
     context.user_data['current_tab'] = tab
-    
-    keyboard = [[InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]]
-    await query.edit_message_text(f"<b>✅ تم تفعيل: {tab}</b>\nأرسل البيانات الآن للتسجيل.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+    keyboard = [[InlineKeyboardButton("🔙 رجوع للرئيسية", callback_data='main_menu')]]
+    await query.edit_message_text(f"<b>✅ تم تفعيل قسم: {tab}</b>\nأرسل بياناتك الآن ليتم حفظها في صفحة {tab}.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tab = context.user_data.get('current_tab')
@@ -77,21 +74,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return
 
-    # كود الإرسال للشيت (قواعد محمود المعتمدة)
+    # إعدادات جوجل شيت
     info = SERVICE_ACCOUNT_INFO.copy()
     info['private_key'] = info['private_key'].replace('\\n', '\n')
     creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
     service = build('sheets', 'v4', credentials=creds).spreadsheets()
     
     now_str = datetime.now(egypt_tz).strftime('%d/%m/%Y %H:%M')
+    # الصف المراد إضافته
     row = [update.message.text, "عالية", "قيد التنفيذ", now_str, "", "", "", "", "سجل السكرتير"]
     
     try:
-        service.values().append(spreadsheetId=SHEET_ID, range=f"{tab}!A2", valueInputOption="RAW", body={"values": [row]}).execute()
+        # الإرسال للتابة المحددة (tab)
+        service.values().append(
+            spreadsheetId=SHEET_ID, 
+            range=f"{tab}!A2", 
+            valueInputOption="RAW", 
+            body={"values": [row]}
+        ).execute()
+        
         keyboard = [[InlineKeyboardButton("🔙 رجوع للرئيسية", callback_data='main_menu')]]
-        await update.message.reply_text(f"✅ تم التسجيل في <b>{tab}</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+        await update.message.reply_text(f"✅ تم الحفظ في صفحة <b>{tab}</b> بنجاح يا محمود.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
     except Exception as e:
-        await update.message.reply_text(f"❌ خطأ: {str(e)}")
+        await update.message.reply_text(f"❌ تعذر الحفظ. تأكد من وجود صفحة باسم '{tab}' في الشيت.\nالخطأ: {str(e)}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
