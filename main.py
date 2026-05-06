@@ -1,55 +1,110 @@
 import os
-from googleapiclient.discovery import build
+import json
+import logging
+import asyncio
+from datetime import datetime
+import pytz
+from groq import Groq
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from concurrent.futures import ThreadPoolExecutor
 
-# --- الإعدادات ---
+# 1. الإعدادات الأساسية
+TOKEN = "8569606909:AAEdLS1E5aruUZW60EPDThrWyGIsCUQlBNs"
+GROQ_KEY = "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"
 SHEET_ID = "18uJrVBBjOOg51sReKhXdxmZdWnBsuAhZlEBda6K8JG8"
+client = Groq(api_key=GROQ_KEY)
+executor = ThreadPoolExecutor(max_workers=10)
+egypt_tz = pytz.timezone('Africa/Cairo')
 
-class SuperSecretary:
+# 2. محرك التحكم في جوجل شيت
+class SheetController:
     def __init__(self):
-        path = 'credentials.json'
-        creds = service_account.Credentials.from_service_account_file(
-            path, scopes=['https://www.googleapis.com/auth/spreadsheets'])
-        self.service = build('sheets', 'v4', credentials=creds).spreadsheets()
+        self.path = 'credentials.json'
+        self.creds = service_account.Credentials.from_service_account_file(
+            self.path, scopes=['https://www.googleapis.com/auth/spreadsheets'])
+        self.service = build('sheets', 'v4', credentials=self.creds, cache_discovery=False).spreadsheets()
 
-    # 1. دالة إنشاء الصفحات وتنسيقها تلقائياً
-    def auto_setup_sheets(self):
-        metadata = self.service.get(spreadsheetId=SHEET_ID).execute()
-        existing_sheets = [s['properties']['title'] for s in metadata['sheets']]
-        
-        # الصفحات اللي السكرتير محتاجها مع العناوين بتاعتها
-        required_sheets = {
-            "Tasks": ["ID", "المهمة", "الحالة", "التاريخ", "ملاحظات"],
-            "Expenses": ["التاريخ", "المبلغ", "البند", "ملاحظات"],
-            "Diet": ["اليوم", "فطار", "غداء", "عشاء", "سناك", "سعرات"],
-            "Gym": ["اليوم", "التمرين", "المجموعات", "العدات", "الوزن"]
-        }
+    def setup_all_sheets(self):
+        """تجهيز كافة الصفحات والعناوين تلقائياً"""
+        try:
+            meta = self.service.get(spreadsheetId=SHEET_ID).execute()
+            sheets = [s['properties']['title'] for s in meta['sheets']]
+            
+            required = {
+                "Tasks": [["ID", "المهمة", "الأولوية", "الحالة", "التاريخ"]],
+                "Expenses": [["التاريخ", "المبلغ", "البند", "ملاحظات"]],
+                "Diet": [["اليوم", "الوجبة", "المكونات", "السعرات"]],
+                "Gym": [["العضلة", "التمرين", "المجموعات", "العدات", "الوزن"]]
+            }
+            
+            for name, headers in required.items():
+                if name not in sheets:
+                    self.service.batchUpdate(spreadsheetId=SHEET_ID, 
+                        body={'requests': [{'addSheet': {'properties': {'title': name}}}]}).execute()
+                self.service.values().update(spreadsheetId=SHEET_ID, range=f'{name}!A1:E1',
+                    valueInputOption='RAW', body={'values': headers}).execute()
+            return "✅ الشيت جاهز بنسبة 100%"
+        except Exception as e: return f"❌ خطأ إعداد الشيت: {e}"
 
-        requests = []
-        for name, headers in required_sheets.items():
-            if name not in existing_sheets:
-                # أمر إنشاء الصفحة
-                requests.append({
-                    'addSheet': {'properties': {'title': name}}
-                })
-        
-        if requests:
-            self.service.batchUpdate(spreadsheetId=SHEET_ID, body={'requests': requests}).execute()
-            print(f"✅ تم إنشاء الصفحات الناقصة: {list(required_sheets.keys())}")
+    def add_data(self, sheet_name, row):
+        try:
+            self.service.values().append(spreadsheetId=SHEET_ID, range=f'{sheet_name}!A:E',
+                valueInputOption='USER_ENTERED', body={'values': [row]}).execute()
+            return True
+        except: return False
 
-        # وضع العناوين (Headers) وتنسيقها
-        for name, headers in required_sheets.items():
-            self.service.values().update(
-                spreadsheetId=SHEET_ID, range=f'{name}!A1:F1',
-                valueInputOption='RAW', body={'values': [headers]}
-            ).execute()
-            # هنا ممكن أضيف كود لتلوين الصف الأول باللون الأزرق أو الأخضر تلقائياً
+sheet_manager = SheetController()
 
-    # 2. دالة المسح الكامل لأي صفحة
-    def clear_sheet(self, sheet_name):
-        self.service.values().clear(spreadsheetId=SHEET_ID, range=f'{sheet_name}!A2:Z100').execute()
-        return f"🧹 تم تنظيف صفحة {sheet_name} بالكامل يا حودة."
+# 3. نظام القوائم (Levels)
+async def start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("1️⃣ المهام", callback_data='lv1_1'), InlineKeyboardButton("2️⃣ المصاريف", callback_data='lv1_2')],
+        [InlineKeyboardButton("3️⃣ يوتيوب", callback_data='lv1_3'), InlineKeyboardButton("4️⃣ المواعيد", callback_data='lv1_4')],
+        [InlineKeyboardButton("5️⃣ الترجمة", callback_data='lv1_5'), InlineKeyboardButton("6️⃣ الإيميلات", callback_data='lv1_6')],
+        [InlineKeyboardButton("7️⃣ الدايت 🍎", callback_data='lv1_7'), InlineKeyboardButton("8️⃣ الجيم 🏋️", callback_data='lv1_8')],
+        [InlineKeyboardButton("🛠️ تهيئة الشيت بالكامل", callback_data='setup_sheets')]
+    ]
+    text = "👔 أهلاً يا محمود (حودة)! أنا سكرتيرك الشخصي.\nاختار القسم اللي عاوزه:"
+    if update.message: await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else: await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# تشغيل المحرك
-secretary_engine = SuperSecretary()
-secretary_engine.auto_setup_sheets() # دي هتظبطلك كل حاجة في الشيت أول ما تشغل الكود
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # منطق القوائم الفرعية
+    if query.data.startswith('lv1_'):
+        code = query.data.split('_')[1]
+        titles = {"1":"المهام", "2":"المصاريف", "3":"يوتيوب", "4":"المواعيد", "5":"الترجمة", "6":"الإيميلات", "7":"الدايت", "8":"الجيم"}
+        keyboard = [
+            [InlineKeyboardButton(f"{code}.1 إضافة/تسجيل", callback_data=f"act_{code}_add")],
+            [InlineKeyboardButton(f"{code}.2 عرض البيانات", callback_data=f"act_{code}_view")],
+            [InlineKeyboardButton("0️⃣ 🔙 رجوع", callback_data='main')]
+        ]
+        await query.edit_message_text(f"📂 قسم {titles[code]}:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data == 'setup_sheets':
+        res = sheet_manager.setup_all_sheets()
+        await query.edit_message_text(res, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data='main')]]))
+
+    elif query.data == 'main': await start_menu(update, context)
+
+# 4. معالج الرسائل (بدون تهنيج)
+async def process_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+    # هنا ممكن نربط الذكاء الاصطناعي للرد أو تنفيذ أوامر الأرقام
+    await update.message.reply_text(f"وصل يا حودة: {user_text}\n(اختار من القائمة للتحكم في الشيت)")
+
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, start_menu))
+    app.add_handler(CallbackQueryHandler(handle_buttons))
+    
+    print("🚀 سكرتير محمود انطلق! كل الصلاحيات والتحكم في الشيت جاهزة.")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
