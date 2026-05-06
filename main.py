@@ -45,6 +45,74 @@ def get_google_creds():
         creds.refresh(Request())
     return creds
 
+def get_sheet_id_by_name(service, name):
+    sheet_metadata = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+    for sheet in sheet_metadata['sheets']:
+        if sheet['properties']['title'] == name:
+            return sheet['properties']['sheetId']
+    return None
+
+def format_new_row(service, row_index):
+    sheet_id = get_sheet_id_by_name(service, TASKS_SHEET)
+    requests_body = [
+        # تنسيق الخلايا المعبأة (A:J)
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": row_index - 1,
+                    "endRowIndex": row_index,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 10
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "textFormat": {
+                            "foregroundColor": {"red": 0.0, "green": 0.12, "blue": 0.47},
+                            "fontSize": 9
+                        },
+                        "horizontalAlignment": "LEFT",
+                        "wrapStrategy": "AUTO_WRAP"
+                    }
+                },
+                "fields": "userEnteredFormat(textFormat,horizontalAlignment,wrapStrategy)"
+            }
+        },
+        # تنسيق الخلايا الفاضية (K+)
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": row_index - 1,
+                    "endRowIndex": row_index,
+                    "startColumnIndex": 10,
+                    "endColumnIndex": 26
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.93, "green": 0.93, "blue": 0.93}
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor)"
+            }
+        },
+        # تلقائي حجم الأعمدة
+        {
+            "autoResizeDimensions": {
+                "dimensions": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 0,
+                    "endIndex": 10
+                }
+            }
+        }
+    ]
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={"requests": requests_body}
+    ).execute()
+
 def get_tasks():
     try:
         creds = get_google_creds()
@@ -78,12 +146,17 @@ def add_task(task, priority="متوسطة", deadline="", notes="", reminder="60"
         ).execute()
         rows = result.get('values', [])
         task_num = len(rows)
+        row_index = task_num + 1
+
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SHEET_ID,
             range=f'{TASKS_SHEET}!A:J',
             valueInputOption='RAW',
             body={'values': [[task_num, task, priority, "جديدة", now, "", "", reminder, deadline, notes]]}
         ).execute()
+
+        format_new_row(sheets_service, row_index)
+
         return f"✅ تمت إضافة المهمة: {task}"
     except Exception as e:
         return f"مش قادر أضيف: {e}"
@@ -93,8 +166,6 @@ def update_task_status(task_num, status):
         creds = get_google_creds()
         service = build('sheets', 'v4', credentials=creds)
         now = datetime.now(pytz.timezone('Africa/Cairo')).strftime("%Y-%m-%d %H:%M")
-        # task_num هنا هو رقم المهمة في القائمة (يبدأ من 1)
-        # في الشيت السطر = task_num + 1 (عشان الهيدر)
         row_index = task_num + 1
         service.spreadsheets().values().update(
             spreadsheetId=SHEET_ID,
@@ -117,14 +188,7 @@ def delete_task(task_num):
     try:
         creds = get_google_creds()
         service = build('sheets', 'v4', credentials=creds)
-        sheet_metadata = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
-        sheet_id = None
-        for sheet in sheet_metadata['sheets']:
-            if sheet['properties']['title'] == TASKS_SHEET:
-                sheet_id = sheet['properties']['sheetId']
-                break
-        # task_num يبدأ من 1، في الشيت السطر الأول هو الهيدر (index 0)
-        # يعني مهمة رقم 1 هي في index 1
+        sheet_id = get_sheet_id_by_name(service, TASKS_SHEET)
         row_index = task_num
         service.spreadsheets().batchUpdate(
             spreadsheetId=SHEET_ID,
@@ -143,12 +207,7 @@ def delete_all_tasks():
     try:
         creds = get_google_creds()
         service = build('sheets', 'v4', credentials=creds)
-        sheet_metadata = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
-        sheet_id = None
-        for sheet in sheet_metadata['sheets']:
-            if sheet['properties']['title'] == TASKS_SHEET:
-                sheet_id = sheet['properties']['sheetId']
-                break
+        sheet_id = get_sheet_id_by_name(service, TASKS_SHEET)
         result = service.spreadsheets().values().get(spreadsheetId=SHEET_ID, range=f'{TASKS_SHEET}!A:A').execute()
         rows = result.get('values', [])
         if len(rows) <= 1:
