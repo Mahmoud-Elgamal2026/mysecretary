@@ -7,13 +7,13 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# --- الإعدادات الأساسية ---
+# --- الإعدادات ---
 TOKEN = "8569606909:AAEdLS1E5aruUZW60EPDThrWyGIsCUQlBNs"
 SHEET_ID = "18uJrVBBjOOg51sReKhXdxmZdWnBsuAhZlEBda6K8JG8"
 egypt_tz = pytz.timezone('Africa/Cairo')
 
-# المفتاح السري بتنسيق سليم تماماً
-RAW_KEY = (
+# المفتاح هنا تم تنظيفه يدوياً ووضعه في متغير نقي
+PRIVATE_KEY = (
     "-----BEGIN PRIVATE KEY-----\n"
     "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC9oOxJ6hrRvox9\n"
     "ZWQUKWPNrVTLUYYUEAJPjPBMPafcpjlbIDmyRB/jw8q7Mprxzbbv6JoIoQDT2YoZ\n"
@@ -41,20 +41,20 @@ RAW_KEY = (
     "+TydUJAZtPDYAUg/c2HBr3laOAV0NMLNPJjo6rI1E+Ykfrez0/7svFnx97WtXZXw\n"
     "HDmIYrlV/ifhhuNoQB4Vn/Ad5cmczFJ3EIyN0amQFBoXwb1MOL0Vip70aDRcTC6M\n"
     "nPZBEpHHxRRgg8I40f1BnUA==\n"
-    "-----END PRIVATE KEY-----"
+    "-----END PRIVATE KEY-----\n"
 )
 
-# بيانات الـ Service Account
+# بيانات الـ Service Account (تم استعادة الحقول الأساسية)
 SERVICE_ACCOUNT_INFO = {
     "type": "service_account",
     "project_id": "my-smart-secretary-495208",
-    "private_key": RAW_KEY,
+    "private_key": PRIVATE_KEY,
     "client_email": "secretary@my-smart-secretary-495208.iam.gserviceaccount.com",
     "token_uri": "https://oauth2.googleapis.com/token",
 }
 
 def get_sheet_service():
-    # هنا بنستخدم الـ info مباشرة لضمان عدم حدوث أخطاء ملفات
+    # استخدام from_service_account_info هو الحل الوحيد لتجنب مشاكل الـ PEM
     creds = service_account.Credentials.from_service_account_info(
         SERVICE_ACCOUNT_INFO, 
         scopes=['https://www.googleapis.com/auth/spreadsheets']
@@ -78,11 +78,10 @@ def add_task_to_sheet(task_name):
         ).execute()
         return "✅ زي الفل يا محمود، المهمة نزلت في الشيت!"
     except Exception as e:
-        return f"❌ حصلت مشكلة تقنية: {str(e)}"
+        return f"❌ خطأ تقني: {str(e)}"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    # تجاهل الأوامر لو بعت /start مرتين
     if user_text.startswith('/'): return 
     
     status = await update.message.reply_text("⏳ جاري التسجيل...")
