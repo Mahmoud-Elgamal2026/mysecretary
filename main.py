@@ -26,25 +26,24 @@ def get_weather():
     try:
         url = f"http://api.weatherapi.com/v1/current.json?key={WEATHER_API_KEY}&q=Cairo&aqi=no"
         data = requests.get(url).json()
-        return f"{data['current']['temp_c']}°C - {data['current']['condition']['text']}"
-    except: return "28°C - مشمس"
+        return f"{data['current']['temp_c']}°C"
+    except: return "28°C"
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(egypt_tz)
-    # تم إزالة الـ backticks لجعل اللون أبيض واستخدام النجمة للخط العريض فقط
+    # تنسيق مدمج جداً لتقليل حجم الرسالة
     text = (
         "👔 **السكرتير الشخصي**\n"
-        "أهلاً بك يا محمود، أتمنى لك يوماً سعيداً.\n\n"
-        f"🗓️ **{now.strftime('%a, %d %B %Y')} | 🌙 19 ذو القعدة 1447**\n"
-        f"⌚ **{now.strftime('%I:%M %p')} (Cairo) | 🌡️ {get_weather()}**\n"
-        "─── 🔐 **الأقسام المتاحة** ───"
+        f"**{now.strftime('%a, %d %b %Y')} | 19 ذو القعدة 1447**\n"
+        f"**{now.strftime('%I:%M %p')} | 🌡️ {get_weather()}**\n"
+        "─── 🔐 **الأقسام** ───"
     )
     
     keyboard = [
-        [InlineKeyboardButton("1️⃣ المهام", callback_data='set_Tasks'), InlineKeyboardButton("2️⃣ المصاريف", callback_data='set_Expenses')],
-        [InlineKeyboardButton("3️⃣ يوتيوب", callback_data='set_YouTube'), InlineKeyboardButton("4️⃣ المواعيد", callback_data='set_Appointments')],
-        [InlineKeyboardButton("5️⃣ الجيم", callback_data='set_Gym'), InlineKeyboardButton("6️⃣ الدايت", callback_data='set_Diet')],
-        [InlineKeyboardButton("7️⃣ الصيانة", callback_data='set_Claims')]
+        [InlineKeyboardButton("1 المهام", callback_data='set_Tasks'), InlineKeyboardButton("2 المصاريف", callback_data='set_Expenses')],
+        [InlineKeyboardButton("3 يوتيوب", callback_data='set_YouTube'), InlineKeyboardButton("4 المواعيد", callback_data='set_Appointments')],
+        [InlineKeyboardButton("5 الجيم", callback_data='set_Gym'), InlineKeyboardButton("6 الدايت", callback_data='set_Diet')],
+        [InlineKeyboardButton("7 الصيانة", callback_data='set_Claims')]
     ]
 
     context.user_data['current_tab'] = None
@@ -68,9 +67,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tab = query.data.split('_')[1]
     context.user_data['current_tab'] = tab
     
-    keyboard = [[InlineKeyboardButton("🔙 رجوع للرئيسية", callback_data='main_menu')]]
+    keyboard = [[InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]]
     await query.edit_message_text(
-        f"✅ تم تفعيل: **{tab}**\nأرسل البيانات للتسجيل، أو اضغط رجوع لتغيير القسم.",
+        f"✅ تم تفعيل: **{tab}**\nأرسل البيانات للتسجيل الآن.",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
@@ -91,14 +90,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         service.values().append(spreadsheetId=SHEET_ID, range=f"{tab}!A2", valueInputOption="RAW", body={"values": [row]}).execute()
-        keyboard = [[InlineKeyboardButton("🔙 رجوع للرئيسية", callback_data='main_menu')]]
-        await update.message.reply_text(f"✅ تم التسجيل في **{tab}**", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [[InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]]
+        await update.message.reply_text(f"✅ تم في **{tab}**", reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
         await update.message.reply_text(f"❌ خطأ: {str(e)}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    # أي رسالة أو أمر start هيفتح القائمة
     app.add_handler(MessageHandler(filters.COMMAND, start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
