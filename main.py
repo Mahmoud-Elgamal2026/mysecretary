@@ -1,7 +1,6 @@
 import os
 import asyncio
 import requests
-import json
 from datetime import datetime
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -9,13 +8,12 @@ from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filt
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# --- الإعدادات الأساسية ---
+# --- الإعدادات ---
 TOKEN = "8569606909:AAEdLS1E5aruUZW60EPDThrWyGIsCUQlBNs"
 SHEET_ID = "18uJrVBBjOOg51sReKhXdxmZdWnBsuAhZlEBda6K8JG8"
 WEATHER_API_KEY = "eb1545625c9b4e33967132442240605"
 egypt_tz = pytz.timezone('Africa/Cairo')
 
-# بيانات الدخول المحدثة لضمان صلاحيات الإرسال
 SERVICE_ACCOUNT_INFO = {
   "type": "service_account",
   "project_id": "my-smart-secretary-495208",
@@ -33,13 +31,17 @@ def get_weather():
 
 async def show_main_menu(update: Update):
     now = datetime.now(egypt_tz)
-    # تنسيق التاريخ والوقت والطقس المطلوب
-    header = "👔 السكرتير الشخصي\n\nأهلاً بك يا محمود، أتمنى لك يوماً سعيداً.\n"
-    date_line = f"📅 التاريخ: {now.strftime('%A، %d %B %Y')} م | 🌙 19 ذو القعدة 1447 هـ.\n"
-    time_line = f"⌚ الوقت الآن: {now.strftime('%I:%M %p')} بتوقيت القاهرة.\n"
-    weather_line = f"🌡️ حالة الطقس: درجة الحرارة {get_weather()}.\n\n"
-    perms_line = "🔐 صلاحيات الوصول والأقسام المتاحة\nيرجى اختيار رقم القسم الذي تود التسجيل فيه الآن:"
-
+    # تنسيق الواجهة الاحترافي والمدمج
+    text = (
+        "### 👔 **السكرتير الشخصي**\n"
+        "**أهلاً بك يا محمود، أتمنى لك يوماً سعيداً.**\n"
+        f"🗓️ **التاريخ:** {now.strftime('%A, %d %B %Y')} | 🌙 19 ذو القعدة 1447 هـ\n"
+        f"⌚ **الوقت:** {now.strftime('%I:%M %p')} (القاهرة) | 🌡️ **الطقس:** {get_weather()}\n\n"
+        "--- \n"
+        "**🔐 صلاحيات الوصول والأقسام المتاحة**\n"
+        "*يرجى اختيار رقم القسم المطلوب للتسجيل الفوري:*"
+    )
+    
     keyboard = [
         [InlineKeyboardButton("1️⃣ المهام", callback_data='set_Tasks'), InlineKeyboardButton("2️⃣ المصاريف", callback_data='set_Expenses')],
         [InlineKeyboardButton("3️⃣ يوتيوب", callback_data='set_YouTube'), InlineKeyboardButton("4️⃣ المواعيد", callback_data='set_Appointments')],
@@ -47,11 +49,10 @@ async def show_main_menu(update: Update):
         [InlineKeyboardButton("7️⃣ الصيانة", callback_data='set_Claims')]
     ]
 
-    text = header + date_line + time_line + weather_line + perms_line
     if update.message:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     else:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update)
@@ -61,7 +62,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     tab = query.data.split('_')[1]
     context.user_data['current_tab'] = tab
-    await query.edit_message_text(f"✅ تم تفعيل القسم رقم ({tab})\nابعت البيانات دلوقتى وهسجلها في تابة {tab} فوراً.")
+    await query.edit_message_text(f"✅ تم تفعيل القسم رقم ({tab})\n\nابعت البيانات دلوقتى وهسجلها في تابة **{tab}** فوراً.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tab = context.user_data.get('current_tab')
@@ -69,19 +70,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update)
         return
 
-    # تنفيذ قواعد الإرسال الخاصة بمحمود
     info = SERVICE_ACCOUNT_INFO.copy()
     info['private_key'] = info['private_key'].replace('\\n', '\n')
     creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
     service = build('sheets', 'v4', credentials=creds).spreadsheets()
     
     now_str = datetime.now(egypt_tz).strftime('%d/%m/%Y %H:%M')
-    # الصف المنسق: البيانات، الأولوية، الحالة، التاريخ...
-    row = [update.message.text, "عالية", "قيد التنفيذ", now_str, "", "", "", "", "أضيفت عبر السكرتير"]
+    # تطبيق قواعد محمود: البيانات، الحالة، التاريخ...
+    row = [update.message.text, "عالية", "قيد التنفيذ", now_str, "", "", "", "", "سجل السكرتير"]
     
     try:
         service.values().append(spreadsheetId=SHEET_ID, range=f"{tab}!A2", valueInputOption="RAW", body={"values": [row]}).execute()
-        await update.message.reply_text(f"✅ تم التسجيل في {tab} بنجاح يا حودة.")
+        await update.message.reply_text(f"✅ تم التسجيل في **{tab}** بنجاح يا حودة.")
     except Exception as e:
         await update.message.reply_text(f"❌ خطأ: {str(e)}")
 
