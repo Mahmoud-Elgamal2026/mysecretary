@@ -93,16 +93,19 @@ def update_task_status(task_num, status):
         creds = get_google_creds()
         service = build('sheets', 'v4', credentials=creds)
         now = datetime.now(pytz.timezone('Africa/Cairo')).strftime("%Y-%m-%d %H:%M")
+        # task_num هنا هو رقم المهمة في القائمة (يبدأ من 1)
+        # في الشيت السطر = task_num + 1 (عشان الهيدر)
+        row_index = task_num + 1
         service.spreadsheets().values().update(
             spreadsheetId=SHEET_ID,
-            range=f'{TASKS_SHEET}!D{task_num+1}',
+            range=f'{TASKS_SHEET}!D{row_index}',
             valueInputOption='RAW',
             body={'values': [[status]]}
         ).execute()
         if status == "✅ منتهية":
             service.spreadsheets().values().update(
                 spreadsheetId=SHEET_ID,
-                range=f'{TASKS_SHEET}!G{task_num+1}',
+                range=f'{TASKS_SHEET}!G{row_index}',
                 valueInputOption='RAW',
                 body={'values': [[now]]}
             ).execute()
@@ -120,9 +123,17 @@ def delete_task(task_num):
             if sheet['properties']['title'] == TASKS_SHEET:
                 sheet_id = sheet['properties']['sheetId']
                 break
+        # task_num يبدأ من 1، في الشيت السطر الأول هو الهيدر (index 0)
+        # يعني مهمة رقم 1 هي في index 1
+        row_index = task_num
         service.spreadsheets().batchUpdate(
             spreadsheetId=SHEET_ID,
-            body={'requests': [{'deleteDimension': {'range': {'sheetId': sheet_id, 'dimension': 'ROWS', 'startIndex': task_num, 'endIndex': task_num + 1}}}]}
+            body={'requests': [{'deleteDimension': {'range': {
+                'sheetId': sheet_id,
+                'dimension': 'ROWS',
+                'startIndex': row_index,
+                'endIndex': row_index + 1
+            }}}]}
         ).execute()
         return f"✅ تم حذف المهمة رقم {task_num}"
     except Exception as e:
@@ -144,7 +155,12 @@ def delete_all_tasks():
             return "مفيش مهام تتحذف"
         service.spreadsheets().batchUpdate(
             spreadsheetId=SHEET_ID,
-            body={'requests': [{'deleteDimension': {'range': {'sheetId': sheet_id, 'dimension': 'ROWS', 'startIndex': 1, 'endIndex': len(rows)}}}]}
+            body={'requests': [{'deleteDimension': {'range': {
+                'sheetId': sheet_id,
+                'dimension': 'ROWS',
+                'startIndex': 1,
+                'endIndex': len(rows)
+            }}}]}
         ).execute()
         return "✅ تم حذف كل المهام!"
     except Exception as e:
@@ -237,11 +253,12 @@ async def check_task_reminders(context):
                 continue
             task_name = row[1] if len(row) > 1 else ""
             status = row[3] if len(row) > 3 else ""
-            reminder_minutes = int(row[7]) if len(row) > 7 and row[7].isdigit() else 60
+            reminder_str = row[7] if len(row) > 7 else "60"
             deadline_str = row[8] if len(row) > 8 else ""
-            if not deadline_str or status in ["✅ منتهية"]:
+            if not deadline_str or status in ["✅ منتهية"] or not reminder_str or reminder_str == "0":
                 continue
             try:
+                reminder_minutes = int(reminder_str)
                 deadline = datetime.strptime(deadline_str, "%Y-%m-%d").replace(tzinfo=egypt_tz)
                 diff_minutes = (deadline - now).total_seconds() / 60
                 if reminder_minutes - 1 <= diff_minutes <= reminder_minutes + 1:
